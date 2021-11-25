@@ -1,0 +1,59 @@
++package sandbox
++alias stdout org.eolang.io.stdout
++alias sprintf org.eolang.txt.sprintf
+
+# Since EO does not have assert and
+# we are not able to throw an exception
+# or break the control flow in a similar
+# manner, this wierd construct is used
+# to simulate assert
+[p cont] > assert
+  if. > @
+    p
+    false
+    cont
+
+[] > character
+  [self mana] > checkMana
+    seq > @
+      stdout "Checking character's mana\n"
+      assert (mana.less 0) true
+  [self mana] > castSpell
+    seq > @
+      self.checkMana self mana
+      stdout
+        sprintf
+          "Character with %d mana casts a spell\n"
+          mana
+  [self mana] > attack
+    seq > @
+      stdout
+        sprintf
+          "Character with %d mana attacks\n"
+          mana
+
+[] > god
+  character > @
+  [self mana] > checkMana
+    seq > @
+      stdout
+        sprintf "The God has unlimited mana\n"
+  [self mana] > attack
+    self.castSpell self mana > @
+
+[args...] > app
+  memory > mana
+  character > regular_character
+  god > god_character
+  seq > @
+    mana.write 10
+    stdout
+      sprintf "Regular character:\n"
+    regular_character.castSpell regular_character mana
+    mana.write (mana.sub 5)
+    regular_character.attack regular_character mana
+    stdout
+      sprintf "\nGod character:\n"
+    god_character.castSpell god_character mana
+    god_character.attack god_character mana
+    0

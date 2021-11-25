@@ -1,3 +1,4 @@
+import Dependencies.V
 import ReleaseTransformations._
 
 ThisBuild / scalaVersion := "2.13.6"
@@ -176,5 +177,5 @@ lazy val sandbox = project
   .dependsOn(`odin`)
   .settings(
     name := "sandbox",
-    libraryDependencies ++= Dependencies.common,
+    libraryDependencies ++= Dependencies.common ++ Seq("com.lihaoyi" %% "pprint" % V.pprint),
   )
