@@ -6,9 +6,12 @@ import higherkindness.droste.data.Fix
 import org.polystat.odin.core.ast.{
   EOAnonExpr,
   EOAnyNameBnd,
+  EOApp,
   EOBnd,
   EOBndExpr,
   EOCopy,
+  EOData,
+  EODecoration,
   EODot,
   EOExpr,
   EOObj,
@@ -46,18 +49,18 @@ object Inliner extends IOApp {
     }
   }
 
-  def findCheckMana(code: EOProg[Fix[EOExpr]]): Option[EOExpr[Fix[EOExpr]]] = {
+  def findCheckMana(code: EOProg[Fix[EOExpr]]): Option[EOObj[Fix[EOExpr]]] = {
     val character: Option[EOBnd[Fix[EOExpr]]] =
       findBndByName(code.bnds, "character")
 
     character.flatMap {
       case EOAnonExpr(_) => None
-      case EOBndExpr(_, expr) => Fix.un(expr) match {
+      case EOBndExpr(_, Fix(expr)) => expr match {
           case EOObj(_, _, bndAttrs) =>
             findBndByName(bndAttrs, "checkMana") match {
-              case Some(value) =>
-                Some(Fix.un(value.expr))
-              case None => None
+              case Some(EOBndExpr(_, Fix(obj: EOObj[Fix[EOExpr]]))) =>
+                Some(obj)
+              case _ => None
             }
           case _ => None
         }
@@ -81,26 +84,63 @@ object Inliner extends IOApp {
 
     def bndHelper(bnd: EOBnd[Fix[EOExpr]]): List[EOCopy[Fix[EOExpr]]] =
       bnd match {
-        case EOAnonExpr(expr) => exprHelper(Fix.un(expr))
-        case EOBndExpr(_, expr) => exprHelper(Fix.un(expr))
+        case EOAnonExpr(Fix(expr)) => exprHelper(expr)
+        case EOBndExpr(_, Fix(expr)) => exprHelper(expr)
       }
 
     code.bnds.flatMap(bndHelper).toList
   }
 
+  def propagateParams(
+    methodBody: EOExpr[Fix[EOExpr]],
+    parameterMap: Map[String, EOExpr[Fix[EOExpr]]]
+  ): EOExpr[Fix[EOExpr]] = {
+
+    def exprHelper(expr: EOExpr[Fix[EOExpr]]): Fix[EOExpr] = expr match {
+      case EOObj(freeAttrs, varargAttr, bndAttrs) =>
+        Fix(EOObj(freeAttrs, varargAttr, bndAttrs.map(eoBndHelper)))
+      case EOCopy(Fix(trg), args) =>
+        Fix(EOCopy(exprHelper(trg), args.map(bndHelper)))
+      case EODot(Fix(src), name) => Fix(EODot(exprHelper(src), name))
+      case EOSimpleApp(name) if parameterMap.contains(name) =>
+        Fix(parameterMap(name))
+      case id => Fix(id)
+    }
+
+    def eoBndHelper(bnd: EOBndExpr[Fix[EOExpr]]): EOBndExpr[Fix[EOExpr]] =
+      EOBndExpr(bnd.bndName, exprHelper(Fix.un(bnd.expr)))
+
+    def bndHelper(bnd: EOBnd[Fix[EOExpr]]): EOBnd[Fix[EOExpr]] = bnd match {
+      case EOAnonExpr(Fix(expr)) => EOAnonExpr(exprHelper(expr))
+      case EOBndExpr(tmp, Fix(expr)) => EOBndExpr(tmp, exprHelper(expr))
+    }
+
+    Fix.un(exprHelper(methodBody))
+  }
+
   def inlineCalls(
     code: EOProg[Fix[EOExpr]],
     targets: List[EOCopy[Fix[EOExpr]]],
-    replacement: EOExpr[Fix[EOExpr]]
+    replacementMethodBody: EOExpr[Fix[EOExpr]],
+    replacementMethodArgs: Vector[String]
   ): EOProg[Fix[EOExpr]] = {
     def exprHelper(expr: EOExpr[Fix[EOExpr]]): Fix[EOExpr] = expr match {
       case EOObj(freeAttrs, varargAttr, bndAttrs) =>
         Fix(EOObj(freeAttrs, varargAttr, bndAttrs.map(eoBndHelper)))
       case copy @ EOCopy(trg, args) =>
+        lazy val recurse = EOCopy(trg, args.map(bndHelper))
+
         if (targets.contains(copy)) {
-          Fix(replacement)
+          val parameterMap = Map
+            .from(
+              replacementMethodArgs.zip(
+                copy.args.value.map(bnd => Fix.un(bnd.expr))
+              )
+            )
+
+          Fix(propagateParams(replacementMethodBody, parameterMap))
         } else {
-          Fix(EOCopy(trg, args.map(bndHelper)))
+          Fix(recurse)
         }
 
       case id => Fix(id)
@@ -110,8 +150,8 @@ object Inliner extends IOApp {
       EOBndExpr(bnd.bndName, exprHelper(Fix.un(bnd.expr)))
 
     def bndHelper(bnd: EOBnd[Fix[EOExpr]]): EOBnd[Fix[EOExpr]] = bnd match {
-      case EOAnonExpr(expr) => EOAnonExpr(exprHelper(Fix.un(expr)))
-      case EOBndExpr(tmp, expr) => EOBndExpr(tmp, exprHelper(Fix.un(expr)))
+      case EOAnonExpr(Fix(expr)) => EOAnonExpr(exprHelper(expr))
+      case EOBndExpr(tmp, Fix(expr)) => EOBndExpr(tmp, exprHelper(expr))
     }
 
     EOProg(code.metas, code.bnds.map(bndHelper))
@@ -120,9 +160,11 @@ object Inliner extends IOApp {
   override def run(args: List[String]): IO[ExitCode] = {
     val sourcecode = readFile("mana.eo")
     for {
+      code <- EoParser.sourceCodeEoParser[IO](2).parse(sourcecode)
+      _ <- IO.delay(astPrinter.pprintln(code))
+
       // Task 1
       _ <- IO.println("-" * 100 ++ "Task1")
-      code <- EoParser.sourceCodeEoParser[IO](2).parse(sourcecode)
       checkManaMethod <- IO.fromOption(findCheckMana(code))(
         new Exception("There is no checkMana method!!!")
       )
@@ -135,14 +177,20 @@ object Inliner extends IOApp {
 
       // Task 3
       _ <- IO.println("-" * 100 ++ "Task3")
-      checkManaBody <- checkManaMethod match {
-        case EOObj(_, _, bndAttrs) => IO.fromOption(
-            bndAttrs.headOption.map(bnd => Fix.un(bnd.expr))
-          )(new Exception("Method body is empty!!!!"))
-        case _ =>
-          IO.raiseError(new Exception("Method checkMana has no body!!!!!"))
-      }
-      inlinedCheckManaMethod = inlineCalls(code, targets, checkManaBody)
+      methodBody <- IO.fromOption(
+        checkManaMethod
+          .bndAttrs
+          .find {
+            case EOBndExpr(EODecoration, _) => true
+            case _ => false
+          }
+          .map(bnd => Fix.un(bnd.expr))
+      )(new Exception("Method has no Body!!!"))
+
+      methodArgs = checkManaMethod.freeAttrs.map(_.name)
+
+      inlinedCheckManaMethod =
+        inlineCalls(code, targets, methodBody, methodArgs)
       _ <- IO.println(inlinedCheckManaMethod.toEO.allLinesToString)
     } yield ExitCode.Success
   }
