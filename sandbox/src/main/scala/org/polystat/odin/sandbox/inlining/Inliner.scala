@@ -122,7 +122,8 @@ object Inliner extends IOApp {
     code: EOProg[Fix[EOExpr]],
     targets: List[EOCopy[Fix[EOExpr]]],
     replacementMethodBody: EOExpr[Fix[EOExpr]],
-    replacementMethodArgs: Vector[String]
+    replacementMethodArgs: Vector[String],
+    replacementMethodLocalBnds: Vector[EOBndExpr[Fix[EOExpr]]]
   ): EOProg[Fix[EOExpr]] = {
     def exprHelper(expr: EOExpr[Fix[EOExpr]]): Fix[EOExpr] = expr match {
       case EOObj(freeAttrs, varargAttr, bndAttrs) =>
@@ -131,14 +132,20 @@ object Inliner extends IOApp {
         lazy val recurse = EOCopy(trg, args.map(bndHelper))
 
         if (targets.contains(copy)) {
-          val parameterMap = Map
+          val parameterMap: Map[String, EOExpr[Fix[EOExpr]]] = Map
             .from(
               replacementMethodArgs.zip(
                 copy.args.value.map(bnd => Fix.un(bnd.expr))
               )
             )
-
-          Fix(propagateParams(replacementMethodBody, parameterMap))
+          val bndMap: Map[String, EOExpr[Fix[EOExpr]]] = Map
+            .from(
+              replacementMethodLocalBnds.map(bnd =>
+                (bnd.bndName.name.name, Fix.un(bnd.expr))
+              )
+            )
+          val replacedBndsBody = propagateParams(replacementMethodBody, bndMap)
+          Fix(propagateParams(replacedBndsBody, parameterMap))
         } else {
           Fix(recurse)
         }
@@ -186,11 +193,16 @@ object Inliner extends IOApp {
           }
           .map(bnd => Fix.un(bnd.expr))
       )(new Exception("Method has no Body!!!"))
-
       methodArgs = checkManaMethod.freeAttrs.map(_.name)
+      methodBnds = checkManaMethod
+        .bndAttrs
+        .filter {
+          case _ => true
+          case EOBndExpr(EODecoration, _) => false
+        }
 
       inlinedCheckManaMethod =
-        inlineCalls(code, targets, methodBody, methodArgs)
+        inlineCalls(code, targets, methodBody, methodArgs, methodBnds)
       _ <- IO.println(inlinedCheckManaMethod.toEO.allLinesToString)
     } yield ExitCode.Success
   }

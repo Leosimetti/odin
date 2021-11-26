@@ -15,9 +15,10 @@
 
 [] > character
   [self mana] > checkMana
+    0 > minMana
     seq > @
       stdout "Checking character's mana\n"
-      assert (mana.less 0) true
+      assert (mana.less minMana) true
   [self mana] > castSpell
     seq > @
       self.checkMana self (mana.add(100))
